@@ -137,11 +137,27 @@ install_packages() {
 copy_havenlink() {
     log_info "Copying HavenLink application..."
     
-    # This would copy from the main repo
-    # For now, create placeholder
-    mkdir -p "${WORK_DIR}/rootfs/opt/havenlink"
+    # Clone HavenLink from main repo
+    local havenlink_repo="${WORK_DIR}/havenlink-repo"
+    log_info "Cloning HavenLink from GitHub..."
+    
+    git clone --depth 1 https://github.com/SkogsErik/havenlink.git "$havenlink_repo" || {
+        log_warn "Failed to clone HavenLink, using placeholder"
+        mkdir -p "${WORK_DIR}/rootfs/opt/havenlink"
+        return 1
+    }
+    
+    # Copy Python tools to image
+    log_info "Installing HavenLink application..."
+    cp -r "$havenlink_repo/tools"/* "${WORK_DIR}/rootfs/opt/havenlink/"
+    
+    # Copy proto files if they exist
+    if [ -d "$havenlink_repo/proto" ]; then
+        cp -r "$havenlink_repo/proto" "${WORK_DIR}/rootfs/opt/havenlink/"
+    fi
     
     # Copy Python dependencies
+    log_info "Installing Python dependencies..."
     chroot "${WORK_DIR}/rootfs" /bin/sh -c "
         pip3 install --no-cache-dir --break-system-packages \
             cryptography \
@@ -151,11 +167,20 @@ copy_havenlink() {
             txtorcon
     "
     
-    # Copy HavenLink files (would be from loramesh repo in production)
-    # For now, just create structure
+    # Copy setup scripts
+    cp scripts/setup-device.sh "${WORK_DIR}/rootfs/usr/local/bin/havenlink-setup"
+    chmod +x "${WORK_DIR}/rootfs/usr/local/bin/havenlink-setup"
+    
+    # Create directories
     mkdir -p "${WORK_DIR}/rootfs/etc/havenlink"
     mkdir -p "${WORK_DIR}/rootfs/var/lib/havenlink"
     mkdir -p "${WORK_DIR}/rootfs/var/log/havenlink"
+    
+    # Create symlink for CLI
+    ln -sf /opt/havenlink/cli.py "${WORK_DIR}/rootfs/usr/local/bin/havenlink"
+    
+    # Cleanup repo clone
+    rm -rf "$havenlink_repo"
 }
 
 # Apply hardening
