@@ -207,6 +207,7 @@ apply_hardening() {
     cp config/hostapd.conf "${WORK_DIR}/rootfs/etc/hostapd.conf"
     cp config/dnsmasq.conf "${WORK_DIR}/rootfs/etc/dnsmasq.conf"
     cp config/network/interfaces "${WORK_DIR}/rootfs/etc/network/interfaces"
+    cp config/network.conf "${WORK_DIR}/rootfs/etc/havenlink/network.conf"
     
     # Create hostapd and dnsmasq directories
     mkdir -p "${WORK_DIR}/rootfs/var/lib/dnsmasq"

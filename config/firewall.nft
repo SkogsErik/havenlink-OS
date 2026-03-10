@@ -54,11 +54,21 @@ table inet filter {
         # Allow established/related
         ct state established,related accept
 
-        # Allow forwarding between WiFi clients (mesh traffic)
-        # This allows clients to communicate with each other
+        # === Client Isolation Mode ===
+        # Set ISOLATE_CLIENTS=1 in /etc/havenlink/network.conf to enable
+        # With isolation: clients can only reach the AP ( HavenLink device)
+        # Without isolation: clients can communicate with each other (mesh mode)
+        
+        # DEFAULT: No client-to-client isolation
+        # Clients can communicate for mesh networking
         ct state new iif wlan0 oif wlan0 accept
         ct state new iif wlan0 oif eth0 accept
         ct state new iif eth0 oif wlan0 accept
+
+        # === Isolated Mode (uncomment to enable) ===
+        # With isolation enabled in hostapd, clients cannot talk to each other
+        # Uncomment below to block all client-to-client traffic at firewall level
+        # ct state new iif wlan0 oif wlan0 drop
 
         # No forwarding to/from WAN (no internet access)
         # All traffic stays local
