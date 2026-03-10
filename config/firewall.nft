@@ -1,0 +1,79 @@
+#!/usr/sbin/nft -f
+# HavenLink OS - Firewall Configuration
+# /etc/nftables.conf
+
+flush ruleset
+
+table inet filter {
+    # INPUT chain - inbound traffic
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # Allow loopback
+        iif lo accept
+
+        # Allow established/related connections
+        ct state established,related accept
+
+        # Allow ICMP (limited rate)
+        ip protocol icmp limit rate 5/second accept
+        ip6 nexthdr ipv6-icmp limit rate 5/second accept
+
+        # Allow SSH from local console only
+        ct state new iif lo tcp dport 22 accept
+
+        # Allow HavenLink mesh ports (TCP 9001-9010)
+        # Only from local network
+        ct state new tcp dport 9001-9010 accept
+
+        # Allow Tor SOCKS (localhost only)
+        iif lo tcp dport 9050 accept
+
+        # Allow Tor control (localhost only)
+        iif lo tcp dport 9051 accept
+
+        # Log dropped packets (optional, for debugging)
+        counter drop
+    }
+
+    # FORWARD chain - routing
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+
+        # No forwarding allowed
+        counter drop
+    }
+
+    # OUTPUT chain - outbound traffic
+    chain output {
+        type filter hook output priority 0; policy drop;
+
+        # Allow loopback
+        oif lo accept
+
+        # Allow established connections
+        ct state established,related accept
+
+        # Allow Tor
+        # Outbound to Tor network
+        tcp dport 9001-9010 accept
+        tcp dport 443 accept
+        tcp dport 80 accept
+
+        # Allow DNS (for Tor)
+        udp dport 53 accept
+
+        # Allow mesh peers
+        tcp dport 9001-9010 accept
+
+        # Log dropped
+        counter drop
+    }
+}
+
+# NAT table (not used in current design)
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+    }
+}

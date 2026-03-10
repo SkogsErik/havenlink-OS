@@ -1,0 +1,39 @@
+# System services configuration
+# /etc/init.d/havenlink
+
+#!/bin/sh /etc/init.d
+
+name=havenlink
+command=/opt/havenlink/bin/havenlink
+command_args="--config /etc/havenlink/havenlink.conf"
+pidfile=/var/run/havenlink.pid
+output_log=/var/log/havenlink/stdout.log
+error_log=/var/log/havenlink/stderr.log
+
+depend() {
+    need net tor
+}
+
+start() {
+    echo "Starting $name..."
+    start_command.sh \
+        --background \
+        --make-pidfile \
+        --pidfile "$pidfile" \
+        --stdout "$output_log" \
+        --stderr "$error_log" \
+        $command $command_args
+}
+
+stop() {
+    echo "Stopping $name..."
+    kill -TERM $(cat "$pidfile") 2>/dev/null || true
+}
+
+status() {
+    if [ -f "$pidfile" ]; then
+        echo "$name is running (PID: $(cat $pidfile))"
+    else
+        echo "$name is not running"
+    fi
+}

@@ -1,0 +1,8 @@
+# Alpine Linux repositories
+# /etc/apk/repositories
+
+# Main community repository
+https://dl-cdn.alpinelinux.org/alpine/v3.20/main
+
+# Community repository
+https://dl-cdn.alpinelinux.org/alpine/v3.20/community

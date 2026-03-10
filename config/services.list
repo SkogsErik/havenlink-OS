@@ -1,0 +1,78 @@
+# HavenLink OS - Services Configuration
+# /etc/havenlink/services.list
+#
+# Services to ENABLE (one per line)
+# These services will be started at boot
+
+# Core services
+tor
+
+# HavenLink service (created during setup)
+havenlink
+
+#
+# Services to DISABLE
+# These services will be masked/disabled
+#
+
+# Network services (not needed)
+# NetworkManager
+# wpa_supplicant
+# systemd-resolved
+# systemd-timesyncd
+# dhcpcd
+# dhcpcd-hook@
+
+# Remote access (disabled for security)
+# dropbear
+# sshd
+# telnet
+# rsh
+# rlogin
+
+# Printing (not needed)
+# cupsd
+# cups-browsed
+
+# Bluetooth (not needed)
+# bluetooth
+# bluetoothd
+# obex
+
+# Media (not needed)
+# udisks2
+# gvfs
+
+# Logging (minimal)
+# syslog
+# rsyslog
+# auditd
+
+# Other unnecessary services
+# avahi-daemon
+# cups
+# rpcbind
+# nfs
+# smbd
+# nmbd
+# winbind
+# apache2
+# nginx
+# php-fpm
+# mysql
+# mariadb
+# postgresql
+# redis
+# mongodb
+# docker
+# containerd
+# podman
+# snapd
+# polkit
+# rtkit
+# accountsservice
+# gdm
+# lightdm
+# sddm
+# kdm
+# xdm
