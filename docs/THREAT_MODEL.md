@@ -5,6 +5,7 @@
 | Version | Date | Status |
 |---------|------|--------|
 | 0.1 | 2026-03-10 | Initial |
+| 0.2 | 2026-03-10 | Added WiFi AP threats |
 
 ---
 
@@ -93,8 +94,10 @@ This threat model covers the HavenLink OS operating system, including:
 │  ├── Mesh peers (TCP 9001-9010)         ──► Limited: peers │
 │  └── Tor SOCKS (127.0.0.1:9050)         ──► Local only    │
 │                                                              │
-│  wlan0 (WiFi) - Optional                                   │
-│  └── Same as eth0                                          │
+│  wlan0 (WiFi AP)                                           │
+│  ├── Mesh clients (TCP 9001-9010)      ──► WiFi clients    │
+│  ├── DHCP server (10.0.0.1:67)          ──► Local only    │
+│  └── WiFi management                    ──► Local only      │
 │                                                              │
 │  lo (Loopback)                                             │
 │  └── Local services only                                   │
@@ -103,11 +106,12 @@ This threat model covers the HavenLink OS operating system, including:
 ```
 
 **Exposure:**
-| Interface | Public | Mesh Peers | Tor | Local |
-|-----------|--------|------------|-----|-------|
-| TCP 9001-9010 | No | Yes | No | Yes |
-| Tor SOCKS | No | No | Yes | Localhost |
-| Tor Control | No | No | No | Localhost |
+| Interface | Public | Mesh Peers | WiFi Clients | Tor | Local |
+|-----------|--------|-------------|--------------|-----|-------|
+| TCP 9001-9010 | No | Yes | Yes | No | Yes |
+| DHCP | No | No | Yes | No | Localhost |
+| Tor SOCKS | No | No | No | Yes | Localhost |
+| Tor Control | No | No | No | No | Localhost |
 
 ### 4.2 Physical Attack Surface
 
@@ -199,6 +203,111 @@ This threat model covers the HavenLink OS operating system, including:
 - [x] Mesh redundancy (future)
 
 **Residual Risk:** Medium
+
+---
+
+#### T12: WiFi Eavesdropping
+
+**Description:** Attacker captures WiFi traffic within range
+
+**Attack Vectors:**
+- WiFi sniffing within range (~50-100m outdoors)
+- Decrypting WPA2 traffic with captured handshake
+
+**Likelihood:** High (WiFi is inherently broadcast)
+
+**Impact:** Medium (WiFi traffic encrypted with WPA2)
+
+**Mitigations:**
+- [x] WPA2-Personal encryption
+- [x] HaventLink messages encrypted end-to-end
+- [ ] WPA3 (if supported by hardware)
+- [ ] MAC address randomization (future)
+
+**Residual Risk:** Low (E2E encryption protects message content)
+
+---
+
+#### T13: Rogue Access Point
+
+**Description:** Attacker deploys fake WiFi AP with same SSID
+
+**Attack Vectors:**
+- Evil twin attack
+- Users connect to attacker's AP instead
+
+**Likelihood:** Medium (requires attacker in physical proximity)
+
+**Impact:** High (man-in-the-middle, data interception)
+
+**Mitigations:**
+- [x] Ed25519 key authentication prevents MITM
+- [x] Users verify fingerprints out-of-band
+- [ ] Certificate pinning for AP identity (future)
+
+**Residual Risk:** Low (app-level encryption)
+
+---
+
+#### T14: WiFi Deauthentication Attack
+
+**Description:** Attacker sends deauth packets to disconnect clients
+
+**Attack Vectors:**
+- 802.11w deauth frames
+- Disrupt connectivity to force reconnections
+
+**Likelihood:** Medium
+
+**Impact:** Low-Medium (temporary disruption)
+
+**Mitigations:**
+- [x] 802.11w protected management frames (if supported)
+- [ ] AP isolation (configurable)
+- [x] Auto-reconnection in HavenLink app
+
+**Residual Risk:** Low
+
+---
+
+#### T15: Unauthorized WiFi Access
+
+**Description:** Unauthorized user gains WiFi access
+
+**Attack Vectors:**
+- Guessing WiFi password
+- Captured password leakage
+
+**Likelihood:** Low-Medium
+
+**Impact:** Medium (access to local network)
+
+**Mitigations:**
+- [x] WPA2-Personal with strong password requirement
+- [x] Mesh traffic encrypted (can't read messages)
+- [x] Firewall blocks unauthorized access to services
+- [ ] Password change on first setup (future)
+- [ ] WiFi access logging (future)
+
+**Residual Risk:** Low
+
+---
+
+#### T16: WiFi Driver Exploit
+
+**Description:** Vulnerability in WiFi driver allows code execution
+
+**Attack Vikelihood:** Low
+
+**Impact:** Critical (full system compromise)
+
+**Mitigations:**
+- [ ] Use WiFi chips with well-maintained drivers
+- [ ] Regular firmware updates (rebuild image)
+- [ ] Network sandboxing (future)
+- [ ] Minimal WiFi driver in kernel
+
+**Residual Risk:** Low-Medium
 
 ---
 
@@ -398,6 +507,9 @@ Very Low    -       -       T9      T11
 | Key Storage | XChaCha20 + Argon2id | Implemented |
 | Duress Protection | Decoy identity | Implemented |
 | Anti-Replay | Epoch + sliding window | Implemented |
+| WiFi Security | WPA2-Personal | Implemented |
+| WiFi Isolation | Client-to-client blocked | Configurable |
+| Local Network | No internet routing | Implemented |
 
 ---
 
