@@ -1,0 +1,25 @@
+# HavenLink-OS - Git Ignore
+
+# Local agent guide (not for version control)
+AGENT_GUIDE.md
+
+# Build artifacts
+*.img
+*.img.gz
+*.iso
+
+# Build directory
+/tmp/
+
+# Local development
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
