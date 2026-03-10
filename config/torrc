@@ -2,12 +2,8 @@
 # /etc/tor/torrc
 
 # Run as client only (not relay)
-SocksPort 9050
-ControlPort 9051
-
-# Don't expose Tor
-SocksBindAddress 127.0.0.1
-ControlBindAddress 127.0.0.1
+SocksPort 127.0.0.1:9050
+ControlPort 127.0.0.1:9051
 
 # Disable unused features
 DisableDebuggerAttachment 1
@@ -15,10 +11,11 @@ DisableNetwork 0
 
 # Logging
 Log notice stdout
-Log notice file /var/log/tor/notices.log
+Log notice syslog
 
 # Data directory
 DataDirectory /var/lib/tor
+User tor
 
 # Client settings
 ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy
@@ -37,3 +34,6 @@ MaxClientCircuitsPending 16
 
 # No exit traffic
 ExitPolicy reject *:*
+
+# Cookie authentication for ControlPort
+CookieAuthentication 1

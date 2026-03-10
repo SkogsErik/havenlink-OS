@@ -23,3 +23,5 @@ AGENT_GUIDE.md
 # OS
 .DS_Store
 Thumbs.db
+*.vdi
+*.img
