@@ -146,7 +146,8 @@ install_packages() {
             wireless-tools \
             py3-cbor2 \
             py3-pynacl \
-            py3-pysocks
+            py3-pysocks \
+            py3-cryptography
     "
     
     # Install arch-specific kernel and bootloader
@@ -278,6 +279,9 @@ create_overlay() {
     chmod +x "${WORK_DIR}/rootfs/usr/local/bin/havenlink-setup"
     cp scripts/havenlink-wipe.sh "${WORK_DIR}/rootfs/usr/local/bin/havenlink-wipe"
     chmod +x "${WORK_DIR}/rootfs/usr/local/bin/havenlink-wipe"
+    cp tools/havenlink-tools.py "${WORK_DIR}/rootfs/usr/local/bin/havenlink-tools"
+    chmod +x "${WORK_DIR}/rootfs/usr/local/bin/havenlink-tools"
+    mkdir -p "${WORK_DIR}/rootfs/mnt/havenlink-usb"
 
     # Fix read-only FS: resolv.conf -> /run, var/lock -> /run/lock
     ln -sf /run/resolv.conf "${WORK_DIR}/rootfs/etc/resolv.conf"
