@@ -2,19 +2,19 @@
 
 ## Executive Summary
 
-HavenLink OS is a purpose-built, hardened operating system for secure peer-to-peer mesh communication. Designed for **air-gapped or internet-disconnected** environments with zero attack surface for administration.
+HavenLink OS is a purpose-built, hardened operating system for secure peer-to-peer communication. It boots into a read-only Alpine Linux environment with Tor running automatically. The user runs the HavenLink CLI tool interactively from the console — there is no background app daemon, no remote administration, and no mutable root filesystem.
 
 **Key Design Principles:**
-- **Minimal**: Absolute minimum packages (~100MB base)
-- **Secure**: No remote admin, console-only management  
-- **Isolated**: Read-only root, RAM-only message storage
-- **Tamper-resistant**: USB key identity, memory sanitization
+- **Minimal**: Only what is needed — kernel, OpenRC, Tor, nftables, HavenLink tool
+- **Secure**: No remote admin, console-only, read-only root
+- **Isolated**: All mutable state lives in tmpfs (lost on reboot)
+- **Transparent**: No hidden services; everything that runs is explicit
 
 ---
 
 ## 1. OS Base
 
-### 1.1 Selection: Alpine Linux
+### 1.1 Selection: Alpine Linux 3.20
 
 | Aspect | Alpine | Debian Minimal |
 |--------|--------|----------------|
@@ -26,148 +26,178 @@ HavenLink OS is a purpose-built, hardened operating system for secure peer-to-pe
 **Why Alpine:**
 - musl is smaller and more memory-safe than glibc
 - APK is simpler to audit
-- Build-time includes only what you need
-- Established in containers/embedded
+- OpenRC is straightforward and well-understood
+- Established in containers/embedded security use cases
 
 ### 1.2 Runtime vs Build-Time
 
 ```
-BUILD-TIME (Internet)          RUNTIME (Air-gapped)
-─────────────────────          ─────────────────────
-- Alpine Linux + tools         - Read-only root
-- Python, C compilers          - No package manager
-- Generate ISO/IMG             - Only: kernel, OpenRC, Tor, HavenLink
-                                  No SSH, no remote admin
+BUILD-TIME (Internet required)         RUNTIME (Air-gapped capable)
+────────────────────────────           ────────────────────────────
+- Alpine mini rootfs downloaded        - Read-only root filesystem
+- Packages installed via apk           - No package manager
+- HavenLink cloned from GitHub         - No SSH, no remote admin
+- Hardening configs applied            - Services: Tor + nftables only
+- Output: raw disk image               - havenlink run manually by user
 ```
 
 ---
 
-## 2. Security Architecture
-
-### 2.1 Network Model
+## 2. Boot Sequence
 
 ```
-┌────────────────────────────────────────┐
-│           HavenLink Device              │
-├────────────────────────────────────────┤
-│  Ethernet/WiFi    LoRa (future)        │
-│  (Mesh LAN)                           │
-│        │                               │
-│        ▼                               │
-│   HavenLink Core (Python + C)          │
-│        │                               │
-│        ▼                               │
-│        Tor (client only, outbound)      │
-└────────────────────────────────────────┘
-         │
-         ▼ (optional internet)
-      Internet
+BIOS/EFI
+  └── syslinux/extlinux (MBR)
+        └── Linux kernel + initramfs
+              └── BusyBox init (/etc/inittab)
+                    ├── mkdir /run/openrc      ← required before OpenRC
+                    ├── openrc sysinit         ← devfs, mdev, hwdrivers
+                    ├── openrc boot            ← localmount, networking, syslog, seedrng
+                    ├── openrc default         ← nftables, tor
+                    └── getty ttyS0            ← serial console login
 ```
 
-**Network Rules:**
-- No incoming connections except from mesh peers on LAN
-- Outbound only via Tor (for internet)
-- No remote admin - console only
-- No DNS except through Tor
+**Key inittab entries:**
+- `::sysinit:/bin/mkdir -p /run/openrc` — OpenRC requires this directory before it runs
+- Serial getty enabled on `ttyS0` at 115200 baud
 
-### 2.2 Administration
+---
+
+## 3. Filesystem Layout at Runtime
+
+```
+/           ext4, read-only (ro,noatime)
+/tmp        tmpfs  — temporary files
+/run        tmpfs  — OpenRC state, PID files, resolv.conf
+/var/log    tmpfs  — service logs (lost on reboot)
+/var/lib/seedrng  tmpfs  — kernel RNG seed persistence
+/var/lib/tor      tmpfs  — Tor data dir (uid=tor, mode=0700)
+```
+
+**Consequences:**
+- `/etc/resolv.conf` is a symlink to `/run/resolv.conf` (written by udhcpc)
+- `/var/run` is a symlink to `/run`
+- `/var/lock` is a symlink to `/run/lock`
+- No persistent writable state outside of attached storage
+
+---
+
+## 4. Services
+
+### 4.1 What Starts Automatically
+
+| Service | Runlevel | Purpose |
+|---------|----------|---------|
+| devfs, mdev | sysinit | Device nodes |
+| modules, sysctl | boot | Kernel config |
+| localmount | boot | Mount fstab tmpfs entries |
+| networking | boot | DHCP on eth0 |
+| seedrng | boot | Kernel entropy seed |
+| syslog | boot | BusyBox syslog |
+| nftables | default | Firewall |
+| tor | default | Tor client daemon |
+
+### 4.2 What Does NOT Start Automatically
+
+- **havenlink** — it is a CLI chat tool, not a daemon. Run it interactively:
+
+```bash
+havenlink --name yourname --tor
+havenlink --name yourname --internet
+havenlink --name yourname --lora
+```
+
+### 4.3 Tor Configuration
+
+Tor runs as the `tor` system user. Key settings in `/etc/tor/torrc`:
+
+- `SocksPort 127.0.0.1:9050` — SOCKS5 proxy for havenlink `--tor` mode
+- `ControlPort 127.0.0.1:9051` — local control port
+- `CookieAuthentication 1` — cookie-based control auth
+- `User tor` — drops privileges automatically at startup
+- `DataDirectory /var/lib/tor` — on tmpfs, uid=tor
+- `ExitPolicy reject *:*` — client-only, no relaying
+
+---
+
+## 5. Security Architecture
+
+### 5.1 Network Model
+
+```
+┌──────────────────────────────────────────┐
+│             HavenLink Device              │
+├──────────────────────────────────────────┤
+│  eth0 (Ethernet, DHCP)                  │
+│    │                                     │
+│    ├── TCP 9001-9010  ◄── mesh peers    │
+│    └── outbound only  ──► Tor (9050)    │
+│                                          │
+│  lo (Loopback)                          │
+│    ├── 127.0.0.1:9050  Tor SOCKS       │
+│    └── 127.0.0.1:9051  Tor Control     │
+└──────────────────────────────────────────┘
+```
+
+All other inbound traffic is dropped by nftables.
+
+### 5.2 Administration
 
 **Only via:**
-- Serial console (Pi/headless)
-- Direct keyboard + display (laptop/VM)
+- Serial console (ttyS0, 115200 baud)
+- Direct keyboard + display
 
 **Disabled:**
 - SSH server
 - HTTP/HTTPS admin
-- Any remote API
-- Firewall management remotely
+- Any remote API or management interface
 
-### 2.3 Identity Storage
+### 5.3 Kernel Hardening (sysctl)
 
-- **Primary**: USB key (XChaCha20-Poly1305 encrypted)
-- **Fallback**: Derived from device + PIN
-- **Duress**: Optional decoy identity
-
-### 2.4 Memory Security
-
-- No swap, no hibernation
-- kdump disabled
+Applied via `/etc/sysctl.d/99-havenlink.conf`:
+- IP forwarding disabled
+- Source routing disabled
+- ICMP redirects disabled
+- SYN cookies enabled
+- Reverse path filtering enabled
+- Magic SysRq disabled
 - Core dumps disabled
-- IOMMU enabled (block DMA)
-- Secure memory clearing after use
+- ASLR enabled (randomize_va_space=2)
+- `/proc/sys/kernel/dmesg_restrict=1`
+
+### 5.4 Module Blacklisting
+
+`/etc/modprobe.d/havenlink-blacklist.conf` prevents loading of:
+- Unused filesystems: cramfs, freevxfs, jffs2, hfs, hfsplus, squashfs, udf
+- Unused protocols: dccp, sctp, rds, tipc
 
 ---
 
-## 3. Component Architecture
+## 6. Python Dependencies
 
-```
-┌─────────────────────────────────────────┐
-│          Application Layer               │
-│  - CLI UI (Primary)                     │
-│  - Setup TUI                            │
-│  - HavenLink Core (Python)              │
-│    • Protocol, Session, Crypto, Contact│
-├─────────────────────────────────────────┤
-│          Transport Layer (C)            │
-│  - TCP/IP Socket                        │
-│  - Tor Onion                            │
-│  - LoRa (future)                        │
-│  - Noise Protocol                       │
-├─────────────────────────────────────────┤
-│          System Layer (C)               │
-│  - Secure Memory                        │
-│  - Key Store                            │
-│  - Memory Sanitizer                     │
-└─────────────────────────────────────────┘
-```
+HavenLink requires Python 3 and the following packages, installed at build time via `apk`:
+
+| Package | APK name | Purpose |
+|---------|----------|---------|
+| cbor2 | py3-cbor2 | Binary message serialization |
+| pynacl | py3-pynacl | NaCl crypto (libsodium bindings) |
+| pysocks | py3-pysocks | SOCKS5 proxy support for `--tor` mode |
 
 ---
 
-## 4. Transport Modularity
+## 7. Build System
 
-```python
-class Transport(ABC):
-    @abstractmethod
-    def bind(self, port: int) -> None
-    @abstractmethod
-    def connect(self, address: str, port: int) -> Peer
-    @abstractmethod
-    def send(self, peer_id: bytes, data: bytes) -> None
-    @abstractmethod
-    def receive(self) -> tuple[bytes, bytes]
-    @abstractmethod
-    def close(self) -> None
-```
+`scripts/build-image.sh` performs:
 
-**Implementations:**
-- `TcpTransport` - Direct TCP mesh
-- `TorTransport` - Tor onion services
-- `LoraTransport` - LoRa radio (future)
-- `MockTransport` - Testing
-
----
-
-## 5. Operations
-
-### First-Time Setup
-1. Write image to boot media
-2. Boot device
-3. Connect console
-4. Run `havenlink-setup`
-5. Initialize identity / import from USB
-6. Ready for use
-
-### Daily Operation
-1. Insert USB key
-2. Power on
-3. HavenLink starts automatically
-4. Mesh networking begins
-5. Send/receive messages
-6. Power off
-
-### Emergency Wipe
-- Physical: destroy USB key
-- Software: `/wipe` command
+1. Creates a raw disk image (ext4 + MBR)
+2. Downloads Alpine Linux mini rootfs
+3. Installs packages via `apk` in a chroot
+4. Clones HavenLink from GitHub → `/opt/havenlink/`
+5. Creates `/usr/local/bin/havenlink` symlink
+6. Copies config files from `config/` and `overlay/`
+7. Sets up runlevel symlinks directly (rc-update fails in cross-arch chroot)
+8. Generates `/etc/fstab` with tmpfs entries using numeric UIDs
+9. Installs syslinux bootloader
 
 ---
 
@@ -175,12 +205,13 @@ class Transport(ABC):
 
 - [x] No remote admin (SSH disabled)
 - [x] Console-only management
-- [x] USB key identity
-- [x] Read-only root
+- [x] Read-only root filesystem
+- [x] tmpfs for all mutable state
 - [x] No swap
 - [x] No crash dumps
-- [x] Outbound-only Tor
-- [x] Noise protocol encryption
-- [x] Double Ratchet forward secrecy
-- [x] Memory sanitization
+- [x] Tor autostarted, client-only
+- [x] nftables firewall (default deny)
+- [x] Kernel hardening (sysctl)
+- [x] Module blacklisting
+- [x] Noise protocol encryption (in havenlink app)
 - [x] No unnecessary services
