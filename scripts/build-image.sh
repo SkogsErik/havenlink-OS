@@ -8,6 +8,7 @@ set -euo pipefail
 VERSION="0.1.0"
 ALPINE_VERSION="3.20"
 ARCH="${ARCH:-aarch64}"  # aarch64, x86_64
+FORMAT="${FORMAT:-img}"  # img or iso
 IMAGE_NAME="havenlink-os-${VERSION}-${ARCH}"
 OUTPUT_DIR="${OUTPUT_DIR:-.}"
 WORK_DIR="/tmp/havenlink-build"
@@ -28,12 +29,15 @@ Usage: $0 [OPTIONS]
 
 Options:
     -a, --arch ARCH      Architecture: aarch64, x86_64 (default: aarch64)
-    -o, --output DIR    Output directory (default: .)
-    -v, --version VER   Version string (default: 0.1.0)
-    -h, --help          Show this help
+    -o, --output DIR     Output directory (default: .)
+    -v, --version VER    Version string (default: 0.1.0)
+    -f, --format FORMAT  Output format: img or iso (default: img)
+                         iso: hybrid Live CD ISO (x86_64 only), bootable from CD or USB
+    -h, --help           Show this help
 
 Examples:
     $0 --arch x86_64 --output /tmp
+    $0 --arch x86_64 --format iso --output /tmp
     $0 -a aarch64 -o .
 EOF
 }
@@ -44,13 +48,11 @@ while [[ $# -gt 0 ]]; do
         -a|--arch) ARCH="$2"; shift 2 ;;
         -o|--output) OUTPUT_DIR="$2"; shift 2 ;;
         -v|--version) VERSION="$2"; shift 2 ;;
+        -f|--format) FORMAT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) log_error "Unknown option: $1"; exit 1 ;;
     esac
 done
-
-log_info "HavenLink OS Build v${VERSION}"
-log_info "Architecture: ${ARCH}"
 
 # Check dependencies
 check_deps() {
@@ -95,7 +97,8 @@ download_alpine() {
 setup_chroot() {
     log_info "Setting up chroot environment..."
     
-    # Copy resolv.conf for DNS
+    # Copy resolv.conf for DNS (remove existing symlink first — it points to /run which doesn't exist yet)
+    rm -f "${WORK_DIR}/rootfs/etc/resolv.conf"
     cp /etc/resolv.conf "${WORK_DIR}/rootfs/etc/"
     
     # Mount proc, sys, dev
@@ -519,19 +522,214 @@ EOF
     losetup -d "$loop_dev"
 }
 
+# Create Live CD ISO (x86_64 only)
+# Produces a hybrid ISO that boots from CD or USB.
+# Architecture: isolinux bootloader + squashfs rootfs + custom live initramfs
+create_iso() {
+    [[ "${ARCH}" != "x86_64" ]] && { log_error "--format iso is only supported for x86_64"; exit 1; }
+
+    local iso_out="${OUTPUT_DIR}/${IMAGE_NAME}.iso"
+    local iso_work="${WORK_DIR}/iso"
+    local initrd_work="${WORK_DIR}/initrd"
+
+    # Check ISO-specific deps
+    for tool in mksquashfs xorriso cpio; do
+        if ! command -v "$tool" &>/dev/null; then
+            log_error "Missing: $tool — install squashfs-tools xorriso"
+            exit 1
+        fi
+    done
+    local isolinux_bin
+    for p in /usr/lib/ISOLINUX/isolinux.bin /usr/lib/syslinux/isolinux.bin /usr/share/syslinux/isolinux.bin; do
+        [[ -f "$p" ]] && isolinux_bin="$p" && break
+    done
+    [[ -n "${isolinux_bin:-}" ]] || { log_error "isolinux.bin not found — install isolinux"; exit 1; }
+
+    log_info "Creating Live CD ISO..."
+    rm -rf "$iso_work" "$initrd_work"
+    mkdir -p "${iso_work}/boot/syslinux"
+
+    # ── 1. Find kernel version ────────────────────────────────────────────────
+    # kver_short = suffix of the vmlinuz symlink (e.g. "lts")
+    # kver       = actual kernel/module directory name (e.g. "6.6.129-0-lts")
+    local kver_short kver
+    kver_short=$(ls "${WORK_DIR}/rootfs/boot/vmlinuz-"* 2>/dev/null | sed 's|.*/vmlinuz-||' | head -1)
+    kver=$(ls "${WORK_DIR}/rootfs/lib/modules/" 2>/dev/null | head -1)
+    [[ -n "$kver_short" ]] || { log_error "No kernel found in rootfs"; exit 1; }
+    [[ -n "$kver" ]] || { log_error "No module directory found in rootfs/lib/modules"; exit 1; }
+    log_info "Kernel: ${kver_short} (${kver})"
+
+    # ── 2. Pack rootfs into squashfs ──────────────────────────────────────────
+    log_info "Packing rootfs into squashfs (may take a few minutes)..."
+    mksquashfs "${WORK_DIR}/rootfs" "${iso_work}/rootfs.sqfs" \
+        -comp gzip -noappend -no-progress \
+        -e proc -e sys -e dev -e run -e tmp
+
+    # ── 3. Copy kernel ────────────────────────────────────────────────────────
+    cp "${WORK_DIR}/rootfs/boot/vmlinuz-${kver_short}" "${iso_work}/boot/vmlinuz"
+
+    # ── 4. Build minimal live initramfs ───────────────────────────────────────
+    log_info "Building live initramfs..."
+    mkdir -p "${initrd_work}"/{bin,sbin,dev,lib,proc,sys,tmp}
+    mkdir -p "${initrd_work}"/{media/live,media/rootfs,media/overlay,new_root}
+    mkdir -p "${initrd_work}/lib/modules/${kver}"
+
+    # busybox — Alpine's busybox is dynamically linked against musl, so copy the linker too
+    cp "${WORK_DIR}/rootfs/bin/busybox" "${initrd_work}/bin/busybox"
+    chmod +x "${initrd_work}/bin/busybox"
+    cp "${WORK_DIR}/rootfs/lib/ld-musl-x86_64.so.1" "${initrd_work}/lib/"
+    ln -sf ld-musl-x86_64.so.1 "${initrd_work}/lib/libc.musl-x86_64.so.1"
+    for applet in sh ash mount umount mkdir sleep modprobe insmod ls cat echo mdev switch_root; do
+        ln -sf busybox "${initrd_work}/bin/${applet}" 2>/dev/null || true
+    done
+    ln -sf /bin/busybox "${initrd_work}/sbin/switch_root"
+
+    # Copy kernel modules needed to find and mount boot media
+    local mod_base="${WORK_DIR}/rootfs/lib/modules/${kver}"
+    cp "${mod_base}/modules.dep"   "${initrd_work}/lib/modules/${kver}/" 2>/dev/null || true
+    cp "${mod_base}/modules.alias" "${initrd_work}/lib/modules/${kver}/" 2>/dev/null || true
+    # Symlink short name (e.g. lts) -> real version so modprobe finds the modules
+    ln -sf "${kver}" "${initrd_work}/lib/modules/${kver_short}" 2>/dev/null || true
+    local live_modules=(loop squashfs overlay isofs cdrom sr_mod sd_mod \
+        ata_piix ata_generic libata ahci scsi_mod \
+        virtio virtio_ring virtio_blk virtio_pci \
+        usb_storage xhci_hcd ehci_hcd)
+    for mod in "${live_modules[@]}"; do
+        local mod_file
+        mod_file=$(find "$mod_base" -name "${mod}.ko*" 2>/dev/null | head -1) || true
+        if [[ -n "$mod_file" ]]; then
+            local rel="${mod_file#${mod_base}/}"
+            mkdir -p "${initrd_work}/lib/modules/${kver}/$(dirname "$rel")"
+            cp "$mod_file" "${initrd_work}/lib/modules/${kver}/${rel}"
+        fi
+    done
+
+    # Live init script — mounts squashfs from boot media + overlayfs, then switch_root
+    cat > "${initrd_work}/init" << 'LIVEINIT'
+#!/bin/sh
+export PATH=/bin:/sbin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
+
+for mod in loop squashfs overlay isofs cdrom sr_mod sd_mod \
+           ata_piix ata_generic libata ahci scsi_mod \
+           virtio virtio_ring virtio_blk virtio_pci \
+           usb_storage xhci_hcd ehci_hcd; do
+    modprobe "$mod" 2>/dev/null || true
+done
+
+sleep 2
+echo "HavenLink OS: searching for boot media..."
+
+found=0
+for attempt in 1 2 3 4 5; do
+    for dev in /dev/sr0 /dev/sr1 /dev/sda /dev/sdb /dev/sdc /dev/vda /dev/vdb /dev/hda; do
+        [ -b "$dev" ] || continue
+        mount -o ro "$dev" /media/live 2>/dev/null || continue
+        if [ -f /media/live/rootfs.sqfs ]; then
+            echo "Found HavenLink boot media on $dev"
+            found=1; break 2
+        fi
+        umount /media/live 2>/dev/null
+    done
+    echo "Attempt $attempt: waiting for boot media..."
+    sleep 1
+done
+
+[ "$found" -eq 1 ] || { echo "ERROR: rootfs.sqfs not found on any device"; exec sh; }
+
+mount -t squashfs -o loop,ro /media/live/rootfs.sqfs /media/rootfs || \
+    { echo "ERROR: squashfs mount failed"; exec sh; }
+
+mount -t tmpfs tmpfs /media/overlay
+mkdir -p /media/overlay/upper /media/overlay/work
+mount -t overlay overlay \
+    -o lowerdir=/media/rootfs,upperdir=/media/overlay/upper,workdir=/media/overlay/work \
+    /new_root || { echo "ERROR: overlayfs mount failed"; exec sh; }
+
+mkdir -p /new_root/run
+mount -t tmpfs tmpfs /new_root/run
+
+exec switch_root /new_root /sbin/init
+LIVEINIT
+    chmod +x "${initrd_work}/init"
+
+    # Pack as cpio + gzip
+    (cd "${initrd_work}" && find . | cpio -H newc -o 2>/dev/null | gzip -9) \
+        > "${iso_work}/boot/initramfs"
+
+    # ── 5. Set up isolinux ────────────────────────────────────────────────────
+    log_info "Setting up isolinux bootloader..."
+    local isolinux_dir
+    isolinux_dir=$(dirname "$isolinux_bin")
+    cp "$isolinux_bin" "${iso_work}/boot/syslinux/"
+
+    # ldlinux.c32 and friends — Debian puts them in modules/bios/
+    local c32_dir
+    for d in /usr/lib/syslinux/modules/bios /usr/lib/syslinux /usr/share/syslinux "$isolinux_dir"; do
+        [[ -f "$d/ldlinux.c32" ]] && c32_dir="$d" && break
+    done
+    for f in ldlinux.c32 libcom32.c32 libutil.c32 menu.c32 vesamenu.c32; do
+        [[ -n "${c32_dir:-}" && -f "${c32_dir}/${f}" ]] && \
+            cp "${c32_dir}/${f}" "${iso_work}/boot/syslinux/" || true
+    done
+
+    cat > "${iso_work}/boot/syslinux/isolinux.cfg" << 'EOF'
+SERIAL 0 115200
+DEFAULT havenlink
+PROMPT 0
+TIMEOUT 50
+
+LABEL havenlink
+  MENU LABEL HavenLink OS
+  LINUX /boot/vmlinuz
+  INITRD /boot/initramfs
+  APPEND quiet console=ttyS0,115200 console=tty0
+EOF
+
+    # ── 6. Create hybrid ISO (CD + USB bootable) ──────────────────────────────
+    log_info "Running xorriso..."
+    local isohdpfx
+    for p in /usr/lib/ISOLINUX/isohdpfx.bin \
+              /usr/lib/syslinux/isohdpfx.bin \
+              /usr/share/syslinux/isohdpfx.bin; do
+        [[ -f "$p" ]] && isohdpfx="$p" && break
+    done
+
+    local hybrid_args=()
+    [[ -n "${isohdpfx:-}" ]] && hybrid_args=(-isohybrid-mbr "$isohdpfx")
+
+    xorriso -as mkisofs \
+        -o "$iso_out" \
+        -V "HAVENLINK" \
+        "${hybrid_args[@]}" \
+        -c boot/syslinux/boot.cat \
+        -b boot/syslinux/isolinux.bin \
+        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        "$iso_work"
+
+    log_info "ISO created: ${iso_out}"
+    log_info "Size: $(du -sh "$iso_out" | cut -f1)"
+    log_info ""
+    log_info "Test in QEMU:"
+    log_info "  qemu-system-x86_64 -m 512 -enable-kvm -cdrom ${iso_out} -nographic -serial mon:stdio"
+    log_info "Write to USB:"
+    log_info "  sudo dd if=${iso_out} of=/dev/sdX bs=4M status=progress"
+}
+
 # Main
 main() {
     check_deps
-    
+
+    log_info "HavenLink OS Build v${VERSION}"
+    log_info "Architecture: ${ARCH}"
+    log_info "Format: ${FORMAT}"
     log_info "Starting build..."
-    
-    # Create work directory
+
     mkdir -p "$WORK_DIR"
-    
-    # Cleanup on exit
     trap cleanup_chroot EXIT
-    
-    # Build steps
+
     download_alpine
     setup_chroot
     install_packages
@@ -540,10 +738,14 @@ main() {
     create_overlay
     generate_fstab
     cleanup_chroot
-    create_image
-    
-    log_info "Build complete!"
-    log_info "Output: ${OUTPUT_DIR}/${IMAGE_NAME}.img.gz"
+
+    if [[ "${FORMAT}" == "iso" ]]; then
+        create_iso
+    else
+        create_image
+        log_info "Build complete!"
+        log_info "Output: ${OUTPUT_DIR}/${IMAGE_NAME}.img.gz"
+    fi
 }
 
 main
