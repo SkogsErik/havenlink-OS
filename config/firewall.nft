@@ -1,6 +1,8 @@
 #!/usr/sbin/nft -f
 # HavenLink OS - Firewall Configuration
 # /etc/nftables.conf
+#
+# Supports both Ethernet and WiFi Access Point modes
 
 flush ruleset
 
@@ -22,9 +24,18 @@ table inet filter {
         # Allow SSH from local console only
         ct state new iif lo tcp dport 22 accept
 
+        # === WiFi AP Mode ===
+        # Allow DHCP from WiFi clients
+        iif wlan0 udp dport 67 accept
+
         # Allow HavenLink mesh ports (TCP 9001-9010)
-        # Only from local network
-        ct state new tcp dport 9001-9010 accept
+        # From any local interface (Ethernet or WiFi)
+        ct state new iif wlan0 tcp dport 9001-9010 accept
+        ct state new iif eth0 tcp dport 9001-9010 accept
+
+        # === Ethernet Mode ===
+        # Allow HavenLink mesh ports from Ethernet
+        ct state new iif eth0 tcp dport 9001-9010 accept
 
         # Allow Tor SOCKS (localhost only)
         iif lo tcp dport 9050 accept
@@ -32,15 +43,26 @@ table inet filter {
         # Allow Tor control (localhost only)
         iif lo tcp dport 9051 accept
 
-        # Log dropped packets (optional, for debugging)
+        # Log dropped packets
         counter drop
     }
 
-    # FORWARD chain - routing
+    # FORWARD chain - routing between interfaces
     chain forward {
         type filter hook forward priority 0; policy drop;
 
-        # No forwarding allowed
+        # Allow established/related
+        ct state established,related accept
+
+        # Allow forwarding between WiFi clients (mesh traffic)
+        # This allows clients to communicate with each other
+        ct state new iif wlan0 oif wlan0 accept
+        ct state new iif wlan0 oif eth0 accept
+        ct state new iif eth0 oif wlan0 accept
+
+        # No forwarding to/from WAN (no internet access)
+        # All traffic stays local
+
         counter drop
     }
 
@@ -54,26 +76,24 @@ table inet filter {
         # Allow established connections
         ct state established,related accept
 
-        # Allow Tor
-        # Outbound to Tor network
+        # Allow Tor (if enabled)
         tcp dport 9001-9010 accept
         tcp dport 443 accept
         tcp dport 80 accept
 
-        # Allow DNS (for Tor)
+        # Allow DNS
         udp dport 53 accept
 
         # Allow mesh peers
         tcp dport 9001-9010 accept
-
-        # Log dropped
-        counter drop
     }
 }
 
-# NAT table (not used in current design)
+# NAT table - for WiFi AP (optional, if we want to share ethernet)
 table ip nat {
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
+        # MASQUERADE for internet sharing (if eth0 has internet)
+        # iif wlan0 oif eth0 masquerade
     }
 }

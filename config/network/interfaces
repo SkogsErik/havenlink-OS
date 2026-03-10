@@ -1,0 +1,26 @@
+# HavenLink OS - Network configuration
+# /etc/network/interfaces
+#
+# WiFi Access Point network setup
+
+auto lo
+iface lo inet loopback
+
+# Ethernet - if present
+auto eth0
+iface eth0 inet dhcp
+    # For static configuration:
+    # iface eth0 inet static
+    #     address 192.168.1.1
+    #     netmask 255.255.255.0
+
+# WiFi Access Point - 2.4GHz
+auto wlan0
+iface wlan0 inet static
+    address 10.0.0.1
+    netmask 255.255.255.0
+    network 10.0.0.0
+    broadcast 10.0.0.255
+    # Wireless parameters
+    wireless-mode Master
+    wireless-essid HavenLink-Mesh

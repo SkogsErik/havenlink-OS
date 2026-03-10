@@ -125,11 +125,15 @@ install_packages() {
             py3-pip \
             build-base \
             pkg-dev \
-            openssl \
-            libsodium-dev \
+            libsodium-dev            openssl \
+ \
             libffi-dev \
             python3-dev \
-            linux-headers
+            linux-headers \
+            hostapd \
+            dnsmasq \
+            wireless-tools \
+            wpa-supplicant
     "
 }
 
@@ -198,6 +202,14 @@ apply_hardening() {
     
     # Copy HavenLink config
     cp config/havenlink.conf "${WORK_DIR}/rootfs/etc/havenlink/"
+    
+    # Copy WiFi AP configs
+    cp config/hostapd.conf "${WORK_DIR}/rootfs/etc/hostapd.conf"
+    cp config/dnsmasq.conf "${WORK_DIR}/rootfs/etc/dnsmasq.conf"
+    cp config/network/interfaces "${WORK_DIR}/rootfs/etc/network/interfaces"
+    
+    # Create hostapd and dnsmasq directories
+    mkdir -p "${WORK_DIR}/rootfs/var/lib/dnsmasq"
     
     # Disable services (create disable list)
     cat > "${WORK_DIR}/rootfs/etc/local.d/disable-services.start" << 'EOF'
