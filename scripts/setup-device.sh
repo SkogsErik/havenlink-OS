@@ -1,273 +1,153 @@
 #!/bin/sh
 #
-# HavenLink OS - First-time Device Setup
-# Runs on first boot or when needed
+# HavenLink OS - Device Setup
+#
+# USB key management and WiFi AP setup are delegated to havenlink-tools.
+# This script handles Tor/firewall verification and first-boot orientation.
 #
 set -e
 
-echo "========================================="
-echo "  HavenLink OS - Initial Setup"
-echo "========================================="
-echo ""
-
-# Check if running as root
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Error: This script must be run as root"
+    echo "Error: must run as root" >&2
     exit 1
 fi
 
-# Load configuration
-if [ -f /etc/havenlink/havenlink.conf ]; then
-    . /etc/havenlink/havenlink.conf
-fi
+TOOLS=/usr/local/bin/havenlink-tools
 
-DATA_DIR="${data_dir:-/var/lib/havenlink}"
-LOG_DIR="${log_dir:-/var/log/havenlink}"
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-echo "Data directory: $DATA_DIR"
-echo "Log directory: $LOG_DIR"
-echo ""
+die() { echo "Error: $*" >&2; exit 1; }
 
-# Check for USB key
-check_usb_key() {
-    echo "Checking for USB key..."
-    # Look for mounted USB with havenlink data
-    for dev in /dev/sd*; do
-        if [ -b "$dev" ]; then
-            # Try to mount and check
-            mountpoint="/mnt/usb"
-            mkdir -p "$mountpoint"
-            if mount -o ro "$dev" "$mountpoint" 2>/dev/null; then
-                if [ -f "$mountpoint/loramesh_identity.enc" ]; then
-                    echo "Found USB key with identity!"
-                    USB_FOUND=1
-                    return 0
-                fi
-                umount "$mountpoint" 2>/dev/null
-            fi
-        fi
-    done
-    echo "No USB key found"
-    USB_FOUND=0
-    return 1
-}
-
-# Generate new identity
-generate_identity() {
+check_tor() {
     echo ""
-    echo "=== Generating New Identity ==="
-    echo ""
-    
-    # Create data directory
-    mkdir -p "$DATA_DIR/keys"
-    mkdir -p "$DATA_DIR/contacts"
-    mkdir -p "$DATA_DIR/sessions"
-    mkdir -p "$DATA_DIR/queue"
-    mkdir -p "$LOG_DIR"
-    
-    chown -R havenlink:havenlink "$DATA_DIR"
-    chown -R havenlink:havenlink "$LOG_DIR"
-    
-    # Generate identity using Python (would call havenlink tool)
-    echo "Identity will be generated on first run of havenlink"
-    
-    echo ""
-    echo "Identity created at: $DATA_DIR/keys/"
-}
-
-# Import from USB
-import_usb() {
-    echo ""
-    echo "=== Import from USB ==="
-    echo "Please insert your USB key and press Enter..."
-    read
-    
-    # Mount USB
-    mountpoint="/mnt/usb"
-    mkdir -p "$mountpoint"
-    
-    # Find and mount USB
-    for dev in /dev/sd*; do
-        if mount -o ro "$dev" "$mountpoint" 2>/dev/null; then
-            if [ -f "$mountpoint/loramesh_identity.enc" ]; then
-                echo "Copying identity from USB..."
-                cp "$mountpoint/loramesh_identity.enc" "$DATA_DIR/keys/"
-                if [ -d "$mountpoint/contacts" ]; then
-                    cp -r "$mountpoint/contacts/"* "$DATA_DIR/contacts/"
-                fi
-                umount "$mountpoint"
-                echo "Import complete!"
-                return 0
-            fi
-            umount "$mountpoint" 2>/dev/null
-        fi
-    done
-    
-    echo "Error: No valid USB key found"
-    return 1
-}
-
-# Setup Tor
-setup_tor() {
-    echo ""
-    echo "=== Configuring Tor ==="
-    
-    # Generate Tor config if not exists
-    if [ ! -f /etc/tor/torrc ]; then
-        cp /etc/tor/torrc.dist /etc/tor/torrc 2>/dev/null || true
+    echo "=== Checking Tor ==="
+    if rc-service tor status >/dev/null 2>&1; then
+        echo "Tor is running."
+    else
+        echo "Tor is not running — starting..."
+        rc-service tor start
     fi
-    
-    # Enable and start Tor
-    rc-update add tor default 2>/dev/null || true
-    rc-service tor start 2>/dev/null || true
-    
-    echo "Tor configured"
 }
 
-# Setup WiFi Access Point
-setup_wifi() {
+check_firewall() {
     echo ""
-    echo "=== Configuring WiFi Access Point ==="
-    echo ""
-    
-    # Check if WiFi interface exists
-    if ! ip link show wlan0 >/dev/null 2>&1; then
-        echo "Warning: No WiFi interface (wlan0) found"
-        echo "WiFi AP configuration skipped"
-        return 0
+    echo "=== Checking Firewall ==="
+    if nft list ruleset | grep -q "havenlink\|chain input" 2>/dev/null; then
+        echo "nftables rules loaded."
+    else
+        echo "Loading nftables rules..."
+        nft -f /etc/firewall.nft
     fi
-    
-    # Generate random default password
-    DEFAULT_PASSWORD="$(tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom | head -c 16)"
-    
-    echo "Default WiFi password: $DEFAULT_PASSWORD"
-    echo ""
-    echo "You MUST change this password for security!"
-    echo ""
-    
-    while true; do
-        echo -n "Enter new WiFi password (min 12 characters): "
-        read -s wifi_password
-        echo ""
-        
-        if [ ${#wifi_password} -lt 12 ]; then
-            echo "Error: Password must be at least 12 characters"
-            continue
-        fi
-        
-        echo -n "Confirm password: "
-        read -s wifi_password_confirm
-        echo ""
-        
-        if [ "$wifi_password" != "$wifi_password_confirm" ]; then
-            echo "Error: Passwords do not match"
-            continue
-        fi
-        
-        break
-    done
-    
-    # Update hostapd config with new password
-    sed -i "s/^wpa_passphrase=.*/wpa_passphrase=$wifi_password/" /etc/hostapd.conf
-    
-    # Configure network
-    if [ -f /etc/havenlink/network.conf ]; then
-        . /etc/havenlink/network.conf
-    fi
-    
-    # Set static IP
-    ip addr add 10.0.0.1/24 dev wlan0 2>/dev/null || true
-    
-    # Enable and start services
-    rc-update add hostapd default 2>/dev/null || true
-    rc-update add dnsmasq default 2>/dev/null || true
-    rc-service hostapd start 2>/dev/null || true
-    rc-service dnsmasq start 2>/dev/null || true
-    
-    echo ""
-    echo "WiFi Access Point configured!"
-    echo "SSID: HavenLink-Mesh"
-    echo "Password: (you set)"
-    echo "Network: 10.0.0.0/24"
 }
 
-# Setup firewall
-setup_firewall() {
+# Prompt user to pick a USB device from detected block devices
+pick_usb_device() {
     echo ""
-    echo "=== Configuring Firewall ==="
-    
-    # Load nftables rules
-    if [ -f /etc/havenlink/firewall.nft ]; then
-        nft -f /etc/havenlink/firewall.nft
-        echo "Firewall rules loaded"
-    fi
-    
-    # Enable nftables
-    rc-update add nftables default 2>/dev/null || true
+    echo "Detected block devices:"
+    lsblk -d -o NAME,SIZE,MODEL 2>/dev/null | grep -v loop || true
+    echo ""
+    printf "Enter USB device (e.g. /dev/sdb): "
+    read USB_DEV
+    [ -b "$USB_DEV" ] || die "$USB_DEV is not a block device"
 }
 
-# Enable services
-enable_services() {
+# ---------------------------------------------------------------------------
+# Menu actions
+# ---------------------------------------------------------------------------
+
+do_usb_init() {
+    pick_usb_device
     echo ""
-    echo "=== Enabling Services ==="
-    
-    # Enable havenlink service
-    rc-update add havenlink default 2>/dev/null || true
-    
-    echo "Services enabled"
+    echo "WARNING: This will overwrite havenlink/ directory on $USB_DEV."
+    printf "Continue? [y/N]: "
+    read yn
+    case "$yn" in [Yy]*) ;; *) echo "Aborted."; return ;; esac
+    "$TOOLS" usb init --device "$USB_DEV"
 }
 
-# Main menu
-main() {
-    echo "Select setup option:"
+do_wifi_start() {
+    pick_usb_device
+    "$TOOLS" wifi start --device "$USB_DEV"
     echo ""
-    echo "1) Generate new identity"
-    echo "2) Import from USB key"
-    echo "3) Full setup (identity + Tor + firewall + WiFi)"
-    echo "4) Configure WiFi Access Point only"
-    echo "5) Skip (run manually later)"
+    echo "WiFi AP started. SSID: HavenLink-Mesh"
+    echo "Share the passphrase with: havenlink-tools wifi show-passphrase --device $USB_DEV"
+}
+
+do_full_setup() {
+    check_tor
+    check_firewall
     echo ""
-    echo -n "Choice [1-5]: "
-    read choice
-    
-    case "$choice" in
-        1)
-            generate_identity
-            ;;
-        2)
-            if check_usb_key; then
-                import_usb
-            fi
-            ;;
-        3)
-            generate_identity
-            setup_tor
-            setup_firewall
-            setup_wifi
-            enable_services
-            ;;
-        4)
-            setup_wifi
-            ;;
-        5)
-            echo "Skipping setup"
-            ;;
-        *)
-            echo "Invalid choice"
-            exit 1
+    echo "=== USB Key Setup ==="
+    pick_usb_device
+    "$TOOLS" usb init --device "$USB_DEV"
+    echo ""
+    echo "=== Identity ==="
+    echo "Run the following to write your identity keypair to the USB key:"
+    echo "  havenlink --init-usb-key /mnt/havenlink-usb/havenlink/identity.enc"
+    echo ""
+    echo "=== WiFi AP ==="
+    printf "Start WiFi AP now? [y/N]: "
+    read yn
+    case "$yn" in
+        [Yy]*)
+            "$TOOLS" wifi start --device "$USB_DEV"
+            echo "WiFi AP started. SSID: HavenLink-Mesh"
+            echo "Passphrase: havenlink-tools wifi show-passphrase --device $USB_DEV"
             ;;
     esac
-    
+}
+
+show_status() {
     echo ""
+    echo "=== Service Status ==="
+    for svc in tor nftables hostapd dnsmasq; do
+        status="stopped"
+        rc-service "$svc" status >/dev/null 2>&1 && status="running"
+        printf "  %-12s %s\n" "$svc" "$status"
+    done
+    echo ""
+    echo "=== WiFi AP Status ==="
+    "$TOOLS" wifi status
+}
+
+# ---------------------------------------------------------------------------
+# Main menu
+# ---------------------------------------------------------------------------
+
+main() {
     echo "========================================="
-    echo "  Setup Complete!"
+    echo "  HavenLink OS — Device Setup"
     echo "========================================="
     echo ""
-    echo "Next steps:"
-    echo "  1. Start HavenLink: rc-service havenlink start"
-    echo "  2. Run havenlink-setup for interactive configuration"
-    echo "  3. Connect to mesh peers"
+    echo "  1) Full first-time setup (USB key + Tor + Firewall + WiFi)"
+    echo "  2) Initialise USB key only"
+    echo "  3) Start WiFi AP (USB key required)"
+    echo "  4) Stop WiFi AP"
+    echo "  5) Show service status"
+    echo "  6) USB key info"
+    echo "  7) Exit"
     echo ""
+    printf "Choice [1-7]: "
+    read choice
+
+    case "$choice" in
+        1) do_full_setup ;;
+        2) do_usb_init ;;
+        3) do_wifi_start ;;
+        4) "$TOOLS" wifi stop ;;
+        5) show_status ;;
+        6)
+            pick_usb_device
+            "$TOOLS" usb show --device "$USB_DEV"
+            ;;
+        7) echo "Exiting."; exit 0 ;;
+        *) echo "Invalid choice."; exit 1 ;;
+    esac
+
+    echo ""
+    echo "Done."
 }
 
 main "$@"
