@@ -124,6 +124,73 @@ setup_tor() {
     echo "Tor configured"
 }
 
+# Setup WiFi Access Point
+setup_wifi() {
+    echo ""
+    echo "=== Configuring WiFi Access Point ==="
+    echo ""
+    
+    # Check if WiFi interface exists
+    if ! ip link show wlan0 >/dev/null 2>&1; then
+        echo "Warning: No WiFi interface (wlan0) found"
+        echo "WiFi AP configuration skipped"
+        return 0
+    fi
+    
+    # Generate random default password
+    DEFAULT_PASSWORD="$(tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom | head -c 16)"
+    
+    echo "Default WiFi password: $DEFAULT_PASSWORD"
+    echo ""
+    echo "You MUST change this password for security!"
+    echo ""
+    
+    while true; do
+        echo -n "Enter new WiFi password (min 12 characters): "
+        read -s wifi_password
+        echo ""
+        
+        if [ ${#wifi_password} -lt 12 ]; then
+            echo "Error: Password must be at least 12 characters"
+            continue
+        fi
+        
+        echo -n "Confirm password: "
+        read -s wifi_password_confirm
+        echo ""
+        
+        if [ "$wifi_password" != "$wifi_password_confirm" ]; then
+            echo "Error: Passwords do not match"
+            continue
+        fi
+        
+        break
+    done
+    
+    # Update hostapd config with new password
+    sed -i "s/^wpa_passphrase=.*/wpa_passphrase=$wifi_password/" /etc/hostapd.conf
+    
+    # Configure network
+    if [ -f /etc/havenlink/network.conf ]; then
+        . /etc/havenlink/network.conf
+    fi
+    
+    # Set static IP
+    ip addr add 10.0.0.1/24 dev wlan0 2>/dev/null || true
+    
+    # Enable and start services
+    rc-update add hostapd default 2>/dev/null || true
+    rc-update add dnsmasq default 2>/dev/null || true
+    rc-service hostapd start 2>/dev/null || true
+    rc-service dnsmasq start 2>/dev/null || true
+    
+    echo ""
+    echo "WiFi Access Point configured!"
+    echo "SSID: HavenLink-Mesh"
+    echo "Password: (you set)"
+    echo "Network: 10.0.0.0/24"
+}
+
 # Setup firewall
 setup_firewall() {
     echo ""
@@ -156,10 +223,11 @@ main() {
     echo ""
     echo "1) Generate new identity"
     echo "2) Import from USB key"
-    echo "3) Full setup (identity + Tor + firewall)"
-    echo "4) Skip (run manually later)"
+    echo "3) Full setup (identity + Tor + firewall + WiFi)"
+    echo "4) Configure WiFi Access Point only"
+    echo "5) Skip (run manually later)"
     echo ""
-    echo -n "Choice [1-4]: "
+    echo -n "Choice [1-5]: "
     read choice
     
     case "$choice" in
@@ -175,9 +243,13 @@ main() {
             generate_identity
             setup_tor
             setup_firewall
+            setup_wifi
             enable_services
             ;;
         4)
+            setup_wifi
+            ;;
+        5)
             echo "Skipping setup"
             ;;
         *)
